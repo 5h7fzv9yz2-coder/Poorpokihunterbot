@@ -2,7 +2,7 @@ name: Pokemon Monitor
 on:
   workflow_dispatch:
   schedule:
-    - cron: '*/5 * * * *' # checks every 5 mins, but only pings you hourly
+    - cron: '*/5 * * * *'
 jobs:
   check:
     runs-on: ubuntu-latest
@@ -11,4 +11,5 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 24
+      - run: npm install cloudscraper
       - run: node monitor.js
