@@ -1,73 +1,63 @@
 const https = require('https');
-const fs = require('fs');
 
 const BOT_TOKEN = "8821796664:AAEghVepErTFj8iUcRDzdHZjAgCyDfcJjPM";
 const CHAT_ID = "1737260357";
 const WA_PHONE = "447508903111";
 const WA_KEY = "2884665";
-const FILE = "last_product.txt";
 
 function sendTelegram(text) {
   const data = JSON.stringify({ chat_id: CHAT_ID, text: text });
-  https.request({
+  console.log("Sending Telegram:", text.substring(0,50));
+  const req = https.request({
     hostname: 'api.telegram.org',
     path: `/bot${BOT_TOKEN}/sendMessage`,
     method: 'POST',
     headers: { 'Content-Type': 'application/json', 'Content-Length': data.length }
-  }, r=>{}).end(data);
+  }, res => {
+    let b=''; res.on('data', d=>b+=d); res.on('end', ()=>console.log("Telegram response:", b));
+  });
+  req.on('error', e=>console.log("Telegram error:", e.message));
+  req.end(data);
 }
 
 function sendWhatsApp(text) {
-  const msg = encodeURIComponent(text.substring(0, 700));
+  const msg = encodeURIComponent(text);
   const path = `/whatsapp.php?phone=${WA_PHONE}&text=${msg}&apikey=${WA_KEY}`;
+  console.log("Sending WhatsApp to", WA_PHONE);
   https.get({ hostname: 'api.callmebot.com', path: path }, res => {
-    let b=''; res.on('data', d=>b+=d); res.on('end', ()=>console.log("WA:", b));
-  });
+    let b=''; res.on('data', d=>b+=d);
+    res.on('end', ()=>console.log("WA response:", b));
+  }).on('error', e=>console.log("WA error:", e.message));
 }
 
-function fetchJson(url, cb){
-  https.get(url, { headers: { 'User-Agent': 'Mozilla/5.0', 'Accept': 'application/json' } }, res => {
-    let d=''; res.on('data', c=>d+=c);
-    res.on('end', ()=>{
-      try{ cb(null, JSON.parse(d)); } catch(e){ cb(e); }
+// 1. SEND TEST IMMEDIATELY - proves WhatsApp works
+sendTelegram("🔧 DEBUG TEST - if you get this, Telegram works");
+sendWhatsApp("🔧 DEBUG TEST " + new Date().toISOString() + " - if you get this, WhatsApp works");
+
+// 2. Then try to fetch Pokemon after 2 seconds
+setTimeout(()=>{
+  console.log("Fetching Pokemon Center products.json...");
+  https.get("https://www.pokemoncenter.com/en-gb/collections/new-arrivals/products.json?limit=3",
+    { headers: { 'User-Agent': 'Mozilla/5.0' } },
+    res => {
+      console.log("Pokemon status:", res.statusCode);
+      let d=''; res.on('data', c=>d+=c);
+      res.on('end', ()=>{
+        console.log("Body length:", d.length);
+        console.log("First 200 chars:", d.substring(0,200));
+        if(d.length < 100){
+          sendWhatsApp("Pokemon blocked, body: " + d);
+        } else {
+          try{
+            const j = JSON.parse(d);
+            const title = j.products[0]?.title || "no title";
+            sendWhatsApp("Pokemon OK! Latest: " + title);
+            sendTelegram("Pokemon OK! Latest: " + title);
+          }catch(e){ console.log("JSON parse error", e.message); }
+        }
+      });
+    }).on('error', e=>{
+      console.log("Fetch error:", e.message);
+      sendWhatsApp("Fetch error: " + e.message);
     });
-  }).on('error', cb);
-}
-
-// Use Shopify JSON endpoint - not blocked by Cloudflare
-const URL = "https://www.pokemoncenter.com/en-gb/collections/new-arrivals/products.json?limit=5";
-
-fetchJson(URL, (err, json)=>{
-  if(err){
-    console.log("Fetch error:", err.message);
-    return;
-  }
-  const products = json.products || [];
-  console.log("Found", products.length, "products");
-  if(products.length === 0) return;
-
-  const latest = products[0];
-  const handle = latest.handle;
-  const title = latest.title;
-  const link = `https://www.pokemoncenter.com/en-gb/products/${handle}`;
-
-  let last = "";
-  try{ last = fs.readFileSync(FILE,'utf8').trim(); } catch(e){}
-
-  console.log("Latest:", handle, "Last:", last);
-
-  // If it's a new product OR you force it via manual run
-  if(handle!== last){
-    fs.writeFileSync(FILE, handle);
-    const msg = `🔥 NEW POKEMON DROP!\n\n${title}\n${handle}\n${link}\n\nTotal new arrivals: ${products.length}`;
-    console.log("SENDING:", msg);
-    sendTelegram(msg);
-    sendWhatsApp(msg);
-  } else {
-    console.log("No new product - same as last");
-    // For testing: still send once if you run manually
-    const msg = `✅ Bot check OK - No new drop\nLatest is still: ${title}\n${link}`;
-    sendTelegram(msg);
-    sendWhatsApp(msg);
-  }
-});
+}, 2000);
