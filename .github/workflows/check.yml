@@ -1,4 +1,4 @@
-name: Pokemon Monitor
+name: Pokemon Monitor - 6 Sites
 on:
   workflow_dispatch:
   schedule:
@@ -11,5 +11,5 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 24
-      - run: npm install cloudscraper
+      - run: npm install cheerio node-fetch@2
       - run: node monitor.js
