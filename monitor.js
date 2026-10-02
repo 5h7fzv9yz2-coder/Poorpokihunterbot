@@ -1,10 +1,11 @@
-const puppeteer = require('puppeteer');
 const https = require('https');
+const fs = require('fs');
 
 const BOT_TOKEN = "8821796664:AAEghVepErTFj8iUcRDzdHZjAgCyDfcJjPM";
 const CHAT_ID = "1737260357";
 const WA_PHONE = "447508903111";
 const WA_KEY = "2884665";
+const FILE = "last_product.txt";
 
 function sendTelegram(text) {
   const data = JSON.stringify({ chat_id: CHAT_ID, text: text });
@@ -13,62 +14,60 @@ function sendTelegram(text) {
     path: `/bot${BOT_TOKEN}/sendMessage`,
     method: 'POST',
     headers: { 'Content-Type': 'application/json', 'Content-Length': data.length }
-  }, () => {}).end(data);
+  }, r=>{}).end(data);
 }
 
 function sendWhatsApp(text) {
-  const msg = encodeURIComponent(text.substring(0, 800));
+  const msg = encodeURIComponent(text.substring(0, 700));
   const path = `/whatsapp.php?phone=${WA_PHONE}&text=${msg}&apikey=${WA_KEY}`;
   https.get({ hostname: 'api.callmebot.com', path: path }, res => {
-    let b=''; res.on('data', d=>b+=d);
-    res.on('end', ()=> console.log("WA:", b));
+    let b=''; res.on('data', d=>b+=d); res.on('end', ()=>console.log("WA:", b));
   });
 }
 
-(async () => {
-  console.log("Launching browser...");
-  const browser = await puppeteer.launch({
-    headless: true,
-    args: ['--no-sandbox', '--disable-setuid-sandbox']
-  });
-  const page = await browser.newPage();
-  await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120.0.0.0 Safari/537.36');
-
-  try {
-    console.log("Going to Pokemon Center...");
-    await page.goto('https://www.pokemoncenter.com/en-gb/collections/new-arrivals', { waitUntil: 'networkidle2', timeout: 60000 });
-
-    const content = await page.content();
-    console.log("Page length:", content.length);
-
-    // Get product handles
-    const products = await page.evaluate(() => {
-      const links = Array.from(document.querySelectorAll('a[href*="/products/"]'));
-      return [...new Set(links.map(a => {
-        const m = a.href.match(/\/products\/([a-z0-9-]+)/);
-        return m? m[1] : null;
-      }).filter(Boolean))];
+function fetchJson(url, cb){
+  https.get(url, { headers: { 'User-Agent': 'Mozilla/5.0', 'Accept': 'application/json' } }, res => {
+    let d=''; res.on('data', c=>d+=c);
+    res.on('end', ()=>{
+      try{ cb(null, JSON.parse(d)); } catch(e){ cb(e); }
     });
+  }).on('error', cb);
+}
 
-    console.log("Found products:", products.slice(0,5));
+// Use Shopify JSON endpoint - not blocked by Cloudflare
+const URL = "https://www.pokemoncenter.com/en-gb/collections/new-arrivals/products.json?limit=5";
 
-    if(products.length === 0){
-      sendTelegram("⚠️ No products found. Page may be blocked.");
-      await browser.close();
-      return;
-    }
-
-    const latest = products[0];
-    const message = `🔥 POKEMON DROP DETECTED!\n\n${latest}\nhttps://www.pokemoncenter.com/en-gb/products/${latest}\n\nTotal: ${products.length} new arrivals`;
-
-    sendTelegram(message);
-    sendWhatsApp(message);
-    console.log("Sent:", message);
-
-  } catch(e) {
-    console.log("Error:", e.message);
-    sendTelegram("Bot error: " + e.message.substring(0,200));
+fetchJson(URL, (err, json)=>{
+  if(err){
+    console.log("Fetch error:", err.message);
+    return;
   }
+  const products = json.products || [];
+  console.log("Found", products.length, "products");
+  if(products.length === 0) return;
 
-  await browser.close();
-})();
+  const latest = products[0];
+  const handle = latest.handle;
+  const title = latest.title;
+  const link = `https://www.pokemoncenter.com/en-gb/products/${handle}`;
+
+  let last = "";
+  try{ last = fs.readFileSync(FILE,'utf8').trim(); } catch(e){}
+
+  console.log("Latest:", handle, "Last:", last);
+
+  // If it's a new product OR you force it via manual run
+  if(handle!== last){
+    fs.writeFileSync(FILE, handle);
+    const msg = `🔥 NEW POKEMON DROP!\n\n${title}\n${handle}\n${link}\n\nTotal new arrivals: ${products.length}`;
+    console.log("SENDING:", msg);
+    sendTelegram(msg);
+    sendWhatsApp(msg);
+  } else {
+    console.log("No new product - same as last");
+    // For testing: still send once if you run manually
+    const msg = `✅ Bot check OK - No new drop\nLatest is still: ${title}\n${link}`;
+    sendTelegram(msg);
+    sendWhatsApp(msg);
+  }
+});
