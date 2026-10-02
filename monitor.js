@@ -20,34 +20,59 @@ async function sendTelegram(text){
 async function fetchPokemon(){
   console.log("Trying CloudScraper bypass...");
   const url = "https://www.pokemoncenter.com/en-gb/collections/new-arrivals/products.json?limit=3";
-  const data = await cloudscraper.get({ uri: url, json: true, headers: { 'User-Agent': 'Mozilla/5.0' } });
-  console.log("CloudScraper SUCCESS len", JSON.stringify(data).length);
-  return data;
+  try{
+    const data = await cloudscraper.get({ uri: url, json: true });
+    console.log("SUCCESS raw:", JSON.stringify(data).slice(0,500));
+    return data;
+  }catch(e){
+    // try as text
+    console.log("JSON fail, trying text", e.message);
+    const text = await cloudscraper.get(url);
+    console.log("Text len", text.length, "start", text.slice(0,500));
+    return JSON.parse(text);
+  }
 }
 
 (async()=>{
   try{
     const json = await fetchPokemon();
-    const latest = json.products[0];
-    const title = latest.title;
-    const link = `https://www.pokemoncenter.com/en-gb/products/${latest.handle}`;
+    console.log("Full keys:", Object.keys(json));
+
+    let latest, title, handle;
+
+    if(json.products && json.products[0]){
+      latest = json.products[0];
+      title = latest.title;
+      handle = latest.handle;
+    } else if(json[0]){
+      // some endpoints return array directly
+      latest = json[0];
+      title = latest.title;
+      handle = latest.handle;
+    } else {
+      console.log("UNKNOWN FORMAT:", JSON.stringify(json).slice(0,1000));
+      throw new Error("Unknown JSON format: " + JSON.stringify(json).slice(0,200));
+    }
+
+    const link = `https://www.pokemoncenter.com/en-gb/products/${handle}`;
+    console.log("Parsed:", title, handle);
 
     let last=""; try{ last=fs.readFileSync(FILE,'utf8').trim(); }catch(e){}
     
-    if(IS_MANUAL || latest.handle !== last){
-      fs.writeFileSync(FILE, latest.handle);
+    if(IS_MANUAL || handle !== last){
+      fs.writeFileSync(FILE, handle);
       fs.writeFileSync(HB_FILE, Date.now().toString());
       const prefix = IS_MANUAL ? "✅ MANUAL TEST - Working!" : "🔥 NEW DROP!";
       await sendTelegram(`${prefix}\n${title}\n${link}`);
     } else {
       let lastHB=0; try{ lastHB=parseInt(fs.readFileSync(HB_FILE,'utf8'))||0; }catch(e){}
-      if(Date.now()-lastHB>3600000){
+      if(Date.now()-lastHB>3600000 || IS_MANUAL){
         fs.writeFileSync(HB_FILE, Date.now().toString());
-        await sendTelegram(`⏰ Hourly - Bot running\n${title}`);
+        await sendTelegram(`⏰ Hourly - Bot running\nLatest: ${title}\n${link}`);
       }
     }
   }catch(e){
-    console.log("FATAL:", e.message.slice(0,300));
-    await sendTelegram(`⚠️ Still blocked: ${e.message.slice(0,150)} - Try FIX 2`);
+    console.log("FATAL:", e.message, e.stack?.slice(0,300));
+    await sendTelegram(`❌ Error: ${e.message.slice(0,200)}`);
   }
 })();
