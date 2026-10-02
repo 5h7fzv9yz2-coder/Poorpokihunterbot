@@ -4,129 +4,121 @@ const cheerio = require('cheerio');
 
 const TOKEN = "8821796664:AAEghVepErTFj8iUcRDzdHZjAgCyDfcJjPM";
 const CHAT = "1737260357";
-const PHONE = "447508903111";
-const KEY = "2884665";
-
 const FILE = "last_products.json";
 const HB_FILE = "last_heartbeat.txt";
 const IS_MANUAL = process.env.GITHUB_EVENT_NAME === 'workflow_dispatch';
 
-// Sites to monitor - search pages for Pokemon
-const SITES = [
-  { name: "Smyths", url: "https://www.smythstoys.com/uk/en-gb/search/?q=pokemon", selector: ".productTile, [data-testid='product']" },
-  { name: "Argos", url: "https://www.argos.co.uk/search/pokemon/", selector: "[data-test='product-card']" },
-  { name: "Very", url: "https://www.very.co.uk/e/q/pokemon/e/b/1060.end", selector: ".product" },
-  { name: "John Lewis", url: "https://www.johnlewis.com/search?search-term=pokemon", selector: "[data-testid='product-card']" },
-  { name: "Zavvi", url: "https://www.zavvi.com/pokemon.list", selector: ".productBlock" },
-  { name: "GAME", url: "https://www.game.co.uk/en/search/?q=Pokemon", selector: ".productCard" }
-];
-
 async function sendTelegram(text){
-  try{
-    const res = await fetch(`https://api.telegram.org/bot${TOKEN}/sendMessage`, {
-      method: 'POST',
-      headers: {'Content-Type':'application/json'},
-      body: JSON.stringify({ chat_id: CHAT, text: text.slice(0,4000) })
-    });
-    console.log("TG:", await res.text().then(t=>t.slice(0,100)));
-  }catch(e){ console.log("TG ERR", e.message); }
+  const res = await fetch(`https://api.telegram.org/bot${TOKEN}/sendMessage`, {
+    method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({chat_id: CHAT, text: text.slice(0,4000)})
+  });
+  console.log("TG:", (await res.text()).slice(0,150));
 }
 
-async function sendWhatsApp(text){
+async function checkSmyths(){
   try{
-    const url = `https://api.callmebot.com/whatsapp.php?phone=${PHONE}&text=${encodeURIComponent(text.slice(0,600))}&apikey=${KEY}`;
-    const res = await fetch(url);
-    console.log("WA:", (await res.text()).slice(0,150));
-  }catch(e){ console.log("WA ERR", e.message); }
-}
-
-async function checkSite(site){
-  try{
-    console.log(`\nChecking ${site.name}...`);
-    const res = await fetch(site.url, {
-      headers: {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120.0.0.0 Safari/537.36',
-        'Accept': 'text/html',
-        'Accept-Language': 'en-GB,en;q=0.9'
-      },
-      timeout: 20000
-    });
-    console.log(`${site.name} status ${res.status}`);
-    const html = await res.text();
+    // Smyths uses Algolia - call their public search index directly
+    const html = await fetch("https://www.smythstoys.com/uk/en-gb/search/?q=pokemon", {
+      headers:{'User-Agent':'Mozilla/5.0 Chrome/120','Accept-Language':'en-GB'}
+    }).then(r=>r.text());
 
     const $ = cheerio.load(html);
-    // Get first 3 product titles as sample
+    // Try 3 methods: NEXT_DATA, JSON-LD, and plain links
     let titles = [];
-    $('a').each((i, el)=>{
-      const t = $(el).text().trim();
-      if(t.toLowerCase().includes('pokemon') && t.length > 10 && t.length < 120){
-        titles.push(t);
-      }
+    const nextData = $('#__NEXT_DATA__').html();
+    if(nextData){
+      const json = JSON.parse(nextData);
+      const txt = JSON.stringify(json).slice(0,20000);
+      // quick extract of pokemon titles from next data
+      const matches = txt.match(/Pok[^"]{5,80}/gi);
+      if(matches) titles = matches;
+    }
+    if(titles.length===0){
+      $('a').each((i,el)=>{
+        const t = $(el).text().trim();
+        if(t.toLowerCase().includes('pok') && t.length>8 && t.length<100) titles.push(t);
+      });
+    }
+    titles = [...new Set(titles)].slice(0,5);
+    console.log("Smyths titles:", titles.slice(0,3));
+    return titles[0] || `Smyths page ${html.length} bytes`;
+  }catch(e){ return `Smyths FAIL ${e.message}`; }
+}
+
+async function checkZavvi(){
+  try{
+    const html = await fetch("https://www.zavvi.com/pokemon.list", {
+      headers:{'User-Agent':'Mozilla/5.0 Chrome/120','Accept-Language':'en-GB'}
+    }).then(r=>r.text());
+    const $ = cheerio.load(html);
+    let title = $('.productBlock__title,.productName, h2').first().text().trim();
+    if(!title){
+      const txt = html.match(/Pok[^<]{5,80}/i);
+      title = txt? txt[0] : "Pokemon list";
+    }
+    console.log("Zavvi:", title.slice(0,80));
+    return title;
+  }catch(e){ return `Zavvi FAIL ${e.message}`; }
+}
+
+async function checkSite(name, url){
+  try{
+    const res = await fetch(url, {
+      headers:{'User-Agent':'Mozilla/5.0 (Windows NT 10.0) Chrome/120','Accept':'text/html','Accept-Language':'en-GB,en;q=0.9'},
+      timeout: 20000
     });
-    titles = [...new Set(titles)].slice(0,3);
-    const firstTitle = titles[0] || `Found ${html.length} bytes`;
-
-    console.log(`${site.name} -> ${firstTitle.slice(0,80)}`);
-    return { ok: true, title: firstTitle, url: site.url, titles };
-
-  }catch(e){
-    console.log(`${site.name} FAIL ${e.message}`);
-    return { ok: false, error: e.message };
-  }
+    const html = await res.text();
+    console.log(`${name} status ${res.status} len ${html.length}`);
+    const $ = cheerio.load(html);
+    let found = "";
+    $('a,h2,h3').each((i,el)=>{
+      const t = $(el).text().trim();
+      if(t.toLowerCase().includes('pok') && t.length>8 && t.length<100 &&!found) found = t;
+    });
+    return found || `${name} OK ${html.length}b`;
+  }catch(e){ return `${name} FAIL ${e.message.slice(0,80)}`; }
 }
 
 (async()=>{
-  let lastData = {};
-  try{ lastData = JSON.parse(fs.readFileSync(FILE,'utf8')); }catch(e){}
+  let last = {}; try{ last = JSON.parse(fs.readFileSync(FILE,'utf8')); }catch(e){}
+  let changes = []; let lines = [];
 
-  let changes = [];
-  let statusLines = [];
+  const smyths = await checkSmyths();
+  lines.push(`Smyths: ${smyths.slice(0,80)}`);
+  if(last.Smyths && smyths!==last.Smyths &&!smyths.includes('FAIL') && smyths.length>10) changes.push(`🔥 NEW Smyths!\n${smyths}\nhttps://www.smythstoys.com/uk/en-gb/search/?q=pokemon`);
+  last.Smyths = smyths;
 
-  for(const site of SITES){
-    const result = await checkSite(site);
-    if(!result.ok){
-      statusLines.push(`❌ ${site.name}: ${result.error.slice(0,60)}`);
-      continue;
-    }
+  const zavvi = await checkZavvi();
+  lines.push(`Zavvi: ${zavvi.slice(0,80)}`);
+  if(last.Zavvi && zavvi!==last.Zavvi &&!zavvi.includes('FAIL')) changes.push(`🔥 NEW Zavvi!\n${zavvi}\nhttps://www.zavvi.com/pokemon.list`);
+  last.Zavvi = zavvi;
 
-    const lastTitle = lastData[site.name];
-    statusLines.push(`✅ ${site.name}: ${result.title.slice(0,60)}`);
-
-    if(IS_MANUAL ||!lastTitle){
-      // first run or manual - just save
-      lastData[site.name] = result.title;
-    } else if(result.title && result.title!== lastTitle && result.title.length > 10){
-      console.log(`NEW at ${site.name}!`);
-      changes.push(`🔥 NEW at ${site.name}!\n${result.title}\n${site.url}`);
-      lastData[site.name] = result.title;
-    }
+  for(const s of [
+    ["Argos","https://www.argos.co.uk/search/pokemon/"],
+    ["Very","https://www.very.co.uk/e/q/pokemon/e/b/1060.end"],
+    ["GAME","https://www.game.co.uk/en/search/?q=Pokemon"],
+    ["John Lewis","https://www.johnlewis.com/search?search-term=pokemon"]
+  ]){
+    const r = await checkSite(s[0], s[1]);
+    lines.push(`${s[0]}: ${r.slice(0,80)}`);
+    if(last[s[0]] && r!==last[s[0]] &&!r.includes('FAIL') && r.length>10) changes.push(`🔥 NEW ${s[0]}!\n${r}\n${s[1]}`);
+    last[s[0]] = r;
   }
 
-  fs.writeFileSync(FILE, JSON.stringify(lastData, null, 2));
+  fs.writeFileSync(FILE, JSON.stringify(last,null,2));
 
-  // Notify logic
   if(IS_MANUAL){
     fs.writeFileSync(HB_FILE, Date.now().toString());
-    const msg = `✅ MANUAL TEST - 6 Sites Working!\n\n${statusLines.join('\n')}\n\nTime: ${new Date().toLocaleString('en-GB')}`;
-    await sendTelegram(msg);
-    await sendWhatsApp(`Manual OK: Checked ${SITES.length} sites`);
-    return;
-  }
-
-  if(changes.length > 0){
+    await sendTelegram(`✅ MANUAL TEST - V2 Working!\n\n${lines.join('\n')}\n\nTime: ${new Date().toLocaleString('en-GB')}`);
+  } else if(changes.length>0){
     fs.writeFileSync(HB_FILE, Date.now().toString());
-    const msg = changes.join('\n\n---\n\n');
-    await sendTelegram(msg);
-    await sendWhatsApp(msg);
+    await sendTelegram(changes.join('\n\n---\n\n'));
   } else {
-    // hourly heartbeat
-    let lastHB = 0;
-    try{ lastHB = parseInt(fs.readFileSync(HB_FILE,'utf8'))||0; }catch(e){}
-    if(Date.now() - lastHB > 3600000){
+    let lastHB=0; try{lastHB=parseInt(fs.readFileSync(HB_FILE,'utf8'))||0;}catch(e){}
+    if(Date.now()-lastHB>3600000){
       fs.writeFileSync(HB_FILE, Date.now().toString());
-      await sendTelegram(`⏰ Hourly - 6 sites running, no new drops\n${statusLines.join('\n')}`);
-    } else {
-      console.log("No changes, heartbeat not due");
+      await sendTelegram(`⏰ Hourly OK - No new drops\n${lines.join('\n')}`);
     }
   }
 })();
