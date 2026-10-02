@@ -2,7 +2,7 @@ name: Pokemon Monitor
 on:
   workflow_dispatch:
   schedule:
-    - cron: '*/5 * * * *'
+    - cron: '*/5 * * * *' # checks every 5 mins, but only pings you hourly
 jobs:
   check:
     runs-on: ubuntu-latest
